@@ -268,6 +268,7 @@ You should now be able to ask TrueNAS questions:
   - ⚠️ **Note**: `ws://` (unencrypted) is **not allowed** - TrueNAS will revoke API keys used over unencrypted connections
 - `--api-key` - TrueNAS API key for authentication (required, or use `TRUENAS_API_KEY` env var)
 - `--api-user` - The user that owns the API key, sent to `auth.login_ex` (default `root`, or use `TRUENAS_API_USER`). Installs where the admin is `truenas_admin` need `--api-user truenas_admin`
+- `--pin-ip` - Only connect to this IP address (or use `TRUENAS_PIN_IP`). The hostname must resolve to this address alone, the TCP connection goes to it whatever DNS says, and the connected peer is checked before the API key is sent. TLS is still verified against the hostname. Refuses `--insecure`. Useful when a proxy or a stale DNS record could otherwise route the key somewhere TrueNAS would see it over plain HTTP and revoke it
 - `--tls-ca` - Path to a PEM certificate to trust, e.g. the TrueNAS self-signed certificate (or use `TRUENAS_TLS_CA` env var)
 - `--insecure` - Disable TLS certificate verification entirely (or set `TRUENAS_INSECURE=1`) - **unsafe**: allows man-in-the-middle attacks; prefer `--tls-ca`
 - `--debug` - Enable debug logging (or set `TRUENAS_MCP_DEBUG=1`)

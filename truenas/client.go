@@ -1,6 +1,7 @@
 package truenas
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,11 @@ type Client struct {
 	apiKey    string
 	apiUser   string
 	tlsConfig *tls.Config
+
+	// Destination pin (nil pinIP = follow DNS). See pin.go.
+	pinIP    net.IP
+	resolver Resolver
+	peerAddr func(*websocket.Conn) net.Addr
 
 	// connMu protects conn and authenticated; also gates connect/authenticate
 	connMu        sync.Mutex
@@ -151,6 +157,12 @@ type Options struct {
 	// APIUser is the user that owns the API key, sent to auth.login_ex.
 	// Defaults to "root".
 	APIUser string
+	// PinIP, if set, is the only address the client will connect to: the
+	// hostname must resolve to it alone, the TCP dial goes to it, and the
+	// connected peer is checked before the key is sent.
+	PinIP net.IP
+	// Resolver answers the pin's DNS check. Defaults to net.DefaultResolver.
+	Resolver Resolver
 }
 
 func NewClient(endpoint, apiKey string, tlsConfig *tls.Config) (*Client, error) {
@@ -167,11 +179,20 @@ func NewClientWithOptions(endpoint, apiKey string, tlsConfig *tls.Config, opts O
 	if opts.APIUser == "" {
 		opts.APIUser = "root"
 	}
+	if opts.PinIP != nil && tlsConfig != nil && tlsConfig.InsecureSkipVerify {
+		return nil, fmt.Errorf("--pin-ip requires TLS verification: refusing --insecure")
+	}
+	if opts.Resolver == nil {
+		opts.Resolver = net.DefaultResolver
+	}
 	return &Client{
 		endpoint:  endpoint,
 		apiKey:    apiKey,
 		apiUser:   opts.APIUser,
 		tlsConfig: tlsConfig,
+		pinIP:     opts.PinIP,
+		resolver:  opts.Resolver,
+		peerAddr:  underlyingRemoteAddr,
 		pending:   make(map[string]chan *responseResult),
 	}, nil
 }
@@ -188,11 +209,22 @@ func (c *Client) connect() error {
 		return err
 	}
 
+	if c.pinIP != nil {
+		if err := checkResolvesOnlyTo(context.Background(), c.resolver, u.Hostname(), c.pinIP); err != nil {
+			log.Printf("%v", err)
+			return err
+		}
+	}
+
 	wsDialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:  c.tlsConfig, // Always use TLS config (only wss:// allowed)
 		ReadBufferSize:   65536,       // 64KB read buffer to handle large messages
 		WriteBufferSize:  65536,       // 64KB write buffer to handle large messages
+		Proxy:            nil,         // never honour HTTP(S)_PROXY: the key must go where the URL says
+	}
+	if c.pinIP != nil {
+		wsDialer.NetDialContext = pinnedDialContext(c.pinIP)
 	}
 
 	log.Printf("Connecting to %s...", u)
@@ -203,6 +235,14 @@ func (c *Client) connect() error {
 		}
 		log.Printf("Connection failed: %v", err)
 		return fmt.Errorf("connection failed: %w", err)
+	}
+
+	if c.pinIP != nil {
+		if err := checkPeer(c.peerAddr(conn), c.pinIP); err != nil {
+			conn.Close()
+			log.Printf("%v", err)
+			return err
+		}
 	}
 
 	// Set read limit to handle large responses (e.g., large upgrade summaries)
@@ -226,7 +266,8 @@ func (c *Client) readLoop(conn *websocket.Conn) {
 		var resp rpcResponse
 		if err := conn.ReadJSON(&resp); err != nil {
 			// Clear the connection BEFORE failing waiters, so their retry
-			// reconnects instead of reusing this dead socket.
+			// reconnects (and re-runs the pin checks) instead of reusing
+			// this dead socket.
 			c.connMu.Lock()
 			if c.conn == conn {
 				c.conn = nil

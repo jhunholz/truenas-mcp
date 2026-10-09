@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 var (
 	truenasURL = flag.String("truenas-url", "", "TrueNAS hostname or WebSocket URL (e.g., 'truenas.local' or 'wss://10.0.0.1/api/current')")
+	pinIP      = flag.String("pin-ip", "", "Only connect to this IP: the hostname must resolve to it alone and the connected peer must match, or the key is not sent (env TRUENAS_PIN_IP)")
 	apiUser    = flag.String("api-user", "", "User that owns the API key, sent to auth.login_ex (default root; env TRUENAS_API_USER)")
 	apiKey     = flag.String("api-key", "", "TrueNAS API key for middleware authentication")
 	insecure   = flag.Bool("insecure", false, "Disable TLS certificate verification (UNSAFE: allows man-in-the-middle attacks)")
@@ -48,6 +50,15 @@ func main() {
 	}
 	if *apiUser == "" {
 		*apiUser = os.Getenv("TRUENAS_API_USER")
+	}
+	if *pinIP == "" {
+		*pinIP = os.Getenv("TRUENAS_PIN_IP")
+	}
+	var pin net.IP
+	if *pinIP != "" {
+		if pin = net.ParseIP(*pinIP); pin == nil {
+			log.Fatalf("--pin-ip %q is not an IP address", *pinIP)
+		}
 	}
 
 	if *truenasURL == "" || *apiKey == "" {
@@ -86,6 +97,7 @@ func main() {
 	// Create TrueNAS client
 	client, err := truenas.NewClientWithOptions(*truenasURL, *apiKey, tlsConfig, truenas.Options{
 		APIUser: *apiUser,
+		PinIP:   pin,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create TrueNAS client: %v", err)
